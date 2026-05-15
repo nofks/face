@@ -567,11 +567,27 @@
                                     <th>ID</th>
                                     <th>Name</th>
                                     <th>Class</th>
+                                    <th>Photo</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="studentsBody"></tbody>
                         </table>
+                    </div>
+                </div>
+
+                <!-- Comparison Modal -->
+                <div id="comparisonModal" class="hidden" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; display: flex; align-items: center; justify-content: center;">
+                    <div style="background: white; border-radius: 24px; padding: 32px; max-width: 800px; width: 90%;">
+                        <h2 style="margin-bottom: 24px;">🔍 AI Face Comparison</h2>
+                        <div id="comparisonContent" style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-bottom: 24px;">
+                            <!-- Reference and target images will be shown here -->
+                        </div>
+                        <div id="comparisonResults" style="background: var(--gray-50); padding: 20px; border-radius: 16px; margin-bottom: 24px;">
+                            <h3 style="margin-bottom: 16px;">Comparison Process</h3>
+                            <div id="comparisonDetails"></div>
+                        </div>
+                        <button class="btn btn-secondary" onclick="closeComparisonModal()">Close</button>
                     </div>
                 </div>
             </div>
@@ -651,14 +667,14 @@
         // Initialize app
         document.addEventListener('DOMContentLoaded', () => {
             if (token) {
-                loadStudents();
+                loadStats();
                 loadTodayAttendance();
                 updateStats();
             } else {
                 // Set default token for demo purposes
                 localStorage.setItem('authToken', 'demo_token_12345');
                 token = 'demo_token_12345';
-                loadStudents();
+                loadStats();
                 loadTodayAttendance();
                 updateStats();
             }
@@ -687,7 +703,7 @@
             }
         }
 
-        async function loadStudents() {
+        async function loadStats() {
             try {
                 const response = await fetch(`${API_URL}/students`, {
                     headers: { 'Authorization': `Bearer ${token}` }
@@ -698,7 +714,7 @@
                     document.getElementById('totalStudents').textContent = data.students.length;
                 }
             } catch (error) {
-                console.error('Load students error:', error);
+                console.error('Load stats error:', error);
             }
         }
 
@@ -766,6 +782,133 @@
             }
         }
 
+        async function uploadStudentPhoto(studentId, input) {
+            try {
+                const file = input.files[0];
+                if (!file) return;
+
+                const formData = new FormData();
+                formData.append('photo', file);
+
+                showNotification(`Uploading photo for student ${studentId}...`);
+
+                const response = await fetch(`${API_URL}/students/${studentId}/photos`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    showNotification(`Photo uploaded successfully!`);
+                    loadStudents(); // Refresh the student list
+                } else {
+                    showNotification(data.message, 'error');
+                }
+            } catch (error) {
+                console.error('Upload photo error:', error);
+                showNotification('Error uploading photo', 'error');
+            }
+        }
+
+        async function viewStudentPhoto(studentId) {
+            try {
+                const response = await fetch(`${API_URL}/students/${studentId}/photos`);
+                const data = await response.json();
+                
+                if (data.success && data.photos.length > 0) {
+                    // Open photo in new window
+                    const photoUrl = `${API_URL}/students/${studentId}/photos/${data.photos[0]}`;
+                    window.open(photoUrl, '_blank');
+                } else {
+                    showNotification('No photos found for this student', 'error');
+                }
+            } catch (error) {
+                console.error('View photo error:', error);
+                showNotification('Error viewing photo', 'error');
+            }
+        }
+
+        async function compareStudentFaces(studentId, referenceEmbedding) {
+            try {
+                // Get current face embedding from camera
+                const detectResponse = await fetch(`${API_URL}/face/detect`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+
+                if (!detectResponse.ok) {
+                    showNotification('Camera not available for comparison', 'error');
+                    return;
+                }
+
+                const detectData = await detectResponse.json();
+                
+                // Show modal with loading state
+                openComparisonModal();
+                document.getElementById('comparisonDetails').innerHTML = 
+                    '<p style="color: blue;">⏳ Comparing faces... This may take a moment.</p>';
+
+                // Compare the embeddings
+                const compareResponse = await fetch(`${API_URL}/face/compare`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        reference_embedding: referenceEmbedding,
+                        target_embedding: detectData.embedding
+                    })
+                });
+
+                const compareData = await compareResponse.json();
+                
+                if (compareData.success) {
+                    // Display comparison results with detailed breakdown
+                    document.getElementById('comparisonDetails').innerHTML = `
+                        <div style="display: grid; gap: 16px;">
+                            <div style="background: white; padding: 16px; border-radius: 12px;">
+                                <h4 style="margin-bottom: 8px;">📊 Similarity Score</h4>
+                                <p><strong>Match:</strong> ${compareData.match ? '✓ YES' : '✗ NO'}</p>
+                                <p><strong>Confidence:</strong> ${compareData.confidence}%</p>
+                                <div style="background: var(--gray-200); height: 12px; border-radius: 6px; margin-top: 8px;">
+                                    <div style="width: ${compareData.confidence}%; background: linear-gradient(90deg, var(--primary), var(--secondary)); height: 100%; border-radius: 6px;"></div>
+                                </div>
+                            </div>
+                            <div style="background: white; padding: 16px; border-radius: 12px;">
+                                <h4 style="margin-bottom: 8px;">🔬 Technical Details</h4>
+                                <p><strong>Dot Product:</strong> ${compareData.comparison_details.dot_product}</p>
+                                <p><strong>Norm A (Reference):</strong> ${compareData.comparison_details.norm_a}</p>
+                                <p><strong>Norm B (Target):</strong> ${compareData.comparison_details.norm_b}</p>
+                                <p><strong>Distance:</strong> ${compareData.distance}</p>
+                            </div>
+                        </div>
+                    `;
+
+                    if (compareData.match) {
+                        showNotification(`Face matched! Confidence: ${compareData.confidence}%`, 'success');
+                    } else {
+                        showNotification('No match found', 'error');
+                    }
+                }
+            } catch (error) {
+                console.error('Compare faces error:', error);
+                document.getElementById('comparisonDetails').innerHTML = 
+                    '<p style="color: red;">✗ Error during comparison</p>';
+            }
+        }
+
+        function openComparisonModal() {
+            const modal = document.getElementById('comparisonModal');
+            modal.classList.remove('hidden');
+            modal.style.display = 'flex';
+        }
+
+        function closeComparisonModal() {
+            const modal = document.getElementById('comparisonModal');
+            modal.classList.add('hidden');
+            modal.style.display = 'none';
+        }
+
 
         async function addStudent(event) {
             event.preventDefault();
@@ -813,6 +956,47 @@
             } catch (error) {
                 console.error('Add student error:', error);
                 showNotification('Failed to add student', 'error');
+            }
+        }
+
+        async function loadStudents() {
+            try {
+                const response = await fetch(`${API_URL}/students`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('totalStudents').textContent = data.students.length;
+                    
+                    // Update the students table with photos and actions
+                    const tbody = document.getElementById('studentsBody');
+                    tbody.innerHTML = '';
+                    
+                    data.students.forEach(student => {
+                        const row = document.createElement('tr');
+                        
+                        // Check if student has a photo
+                        let photoCell = '<span style="color: var(--gray-400);">No photo</span>';
+                        
+                        row.innerHTML = `
+                            <td>${student.student_id}</td>
+                            <td>${student.name}</td>
+                            <td>${student.class_name || '-'}</td>
+                            <td>${photoCell}</td>
+                            <td>
+                                <button class="btn btn-secondary" onclick="viewStudentPhoto(${student.id})">👁️ View Photo</button>
+                                <input type="file" id="photoInput_${student.id}" accept=".jpg,.jpeg,.png" style="display: none;" onchange="uploadStudentPhoto(${student.id}, this)">
+                                <button class="btn btn-secondary" onclick="document.getElementById('photoInput_${student.id}').click()">📁 Upload Photo</button>
+                                <button class="btn btn-primary" onclick="compareStudentFaces(${student.id})">🔍 Check Presence</button>
+                            </td>
+                        `;
+                        
+                        tbody.appendChild(row);
+                    });
+                }
+            } catch (error) {
+                console.error('Load students error:', error);
             }
         }
 

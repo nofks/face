@@ -7,6 +7,8 @@ import hashlib
 import jwt
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
+import random
+import base64
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -30,7 +32,7 @@ def init_db():
         )
     ''')
     
-    # Students table with face embeddings
+    # Students table with face embeddings and photo path
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS students (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,6 +40,7 @@ def init_db():
             student_id TEXT UNIQUE NOT NULL,
             class_name TEXT,
             face_embedding BLOB,
+            face_photo_path TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -526,6 +529,145 @@ def upload_face_image():
             'confidence': random.uniform(0.85, 0.99),
             'filename': file.filename
         })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/students/<int:studentId>/photos', methods=['POST'])
+def upload_student_photo(studentId):
+    """Upload a photo for a specific student"""
+    try:
+        if 'photo' not in request.files:
+            return jsonify({'success': False, 'message': 'No photo uploaded'}), 400
+        
+        file = request.files['photo']
+        if file.filename == '':
+            return jsonify({'success': False, 'message': 'No file selected'}), 400
+        
+        # Save the photo to a directory
+        upload_dir = '/workspace/face_attendance_system/backend/student_photos'
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        filename = f"{studentId}_{file.filename}"
+        filepath = os.path.join(upload_dir, filename)
+        file.save(filepath)
+        
+        # Store photo reference in database
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE students SET face_photo_path = ? WHERE id = ?
+        ''', (filename, studentId))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Photo uploaded: {filename}',
+            'photo_url': f'/api/students/{studentId}/photos/{filename}'
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/students/<int:studentId>/photos', methods=['GET'])
+def get_student_photos(studentId):
+    """Get all photos for a specific student"""
+    try:
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT face_photo_path FROM students WHERE id = ?', (studentId,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0]:
+            return jsonify({
+                'success': True,
+                'photos': [result[0]]
+            })
+        else:
+            return jsonify({'success': True, 'photos': []})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/face/compare', methods=['POST'])
+def compare_faces():
+    """Compare two face images and show the comparison process"""
+    try:
+        data = request.get_json()
+        reference_embedding = data.get('reference_embedding', [])
+        target_embedding = data.get('target_embedding', [])
+        
+        # Calculate cosine similarity (detailed breakdown)
+        dot_product = sum(a * b for a, b in zip(reference_embedding, target_embedding))
+        norm_a = (sum(x**2 for x in reference_embedding)) ** 0.5
+        norm_b = (sum(x**2 for x in target_embedding)) ** 0.5
+        
+        if norm_a > 0 and norm_b > 0:
+            similarity = dot_product / (norm_a * norm_b)
+            
+            # Detailed comparison metrics
+            distance = 1 - similarity
+            
+            return jsonify({
+                'success': True,
+                'similarity_score': round(similarity, 4),
+                'distance': round(distance, 4),
+                'match': similarity > 0.7,
+                'confidence': round(similarity * 100, 2),
+                'comparison_details': {
+                    'dot_product': round(dot_product, 4),
+                    'norm_a': round(norm_a, 4),
+                    'norm_b': round(norm_b, 4)
+                }
+            })
+        else:
+            return jsonify({
+                'success': True,
+                'similarity_score': 0.0,
+                'distance': 1.0,
+                'match': False,
+                'confidence': 0.0
+            })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/students/<int:studentId>/photos/<filename>', methods=['GET'])
+def serve_student_photo(studentId, filename):
+    """Serve a student's photo"""
+    try:
+        upload_dir = '/workspace/face_attendance_system/backend/student_photos'
+        return send_from_directory(upload_dir, filename)
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+@app.route('/api/students/<int:studentId>', methods=['PUT'])
+def update_student(studentId):
+    """Update student with new face embedding and photo"""
+    try:
+        data = request.get_json()
+        
+        conn = sqlite3.connect(DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE students SET 
+                name = ?, 
+                student_id = ?, 
+                class_name = ?,
+                face_embedding = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (
+            data.get('name'),
+            data.get('student_id'),
+            data.get('class_name'),
+            str(data.get('face_embedding', [])),
+            studentId
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
